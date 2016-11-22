@@ -1,0 +1,236 @@
+package main
+
+import (
+	"bufio"
+	"flag"
+	"io"
+	"io/ioutil"
+	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"strings"
+	"time"
+
+	"github.com/QubitProducts/bamboo/api"
+	"github.com/QubitProducts/bamboo/configuration"
+	"github.com/kardianos/osext"
+	"github.com/natefinch/lumberjack"
+
+	"github.com/kataras/iris"
+)
+
+/*
+	Commandline arguments
+*/
+var configFilePath string
+var logPath string
+var serverBindPort string
+
+func init() {
+	flag.StringVar(&configFilePath, "config", "config/development.json", "Full path of the configuration JSON file")
+	flag.StringVar(&logPath, "log", "", "Log path to a file. Default logs to stdout")
+	flag.StringVar(&serverBindPort, "bind", ":8000", "Bind HTTP server to a specific port")
+}
+
+func main() {
+	flag.Parse()
+	configureLog()
+
+	// Load configuration
+	conf, err := configuration.FromFile(configFilePath)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	//eventBus := event_bus.New()
+
+	// Wait for died children to avoid zombies
+	// signalChannel := make(chan os.Signal, 2)
+	// signal.Notify(signalChannel, os.Interrupt, syscall.SIGCHLD)
+	// go func() {
+	// 	for {
+	// 		sig := <-signalChannel
+	// 		if sig == syscall.SIGCHLD {
+	// 			r := syscall.Rusage{}
+	// 			syscall.Wait4(-1, nil, 0, &r)
+	// 		}
+	// 	}
+	// }()
+
+	// Create StatsD client
+	conf.StatsD.CreateClient()
+
+	// Create Zookeeper connection
+	// zkConn := listenToZookeeper(conf, eventBus)
+
+	// Register handlers
+	// handlers := event_bus.Handlers{Conf: &conf, Storage: storage}
+	// eventBus.Register(handlers.MarathonEventHandler)
+	// eventBus.Register(handlers.ServiceEventHandler)
+	// eventBus.Publish(event_bus.MarathonEvent{EventType: "bamboo_startup", Timestamp: time.Now().Format(time.RFC3339)})
+
+	// Handle gracefully exit
+	//registerOSSignals()
+
+	// Start server
+	initServer(&conf)
+}
+
+func initServer(conf *configuration.Configuration) {
+	// stateAPI := api.StateAPI{Config: conf, Storage: storage}
+	// serviceAPI := api.ServiceAPI{Config: conf, Storage: storage}
+	// eventSubAPI := api.EventSubscriptionAPI{Conf: conf, EventBus: eventBus}
+
+	// Status live information
+	//router := martini.Classic()
+
+	iris.Get("/status", func(c *iris.Context) {
+		c.HTML(iris.StatusOK, "OK")
+	})
+
+	iris.Get("/api/state", func(c *iris.Context) {
+		c.HTML(iris.StatusOK, "OK")
+	})
+
+	// func (state *StateAPI) Get(w http.ResponseWriter, r *http.Request) {
+	// 	templateData, _ := haproxy.GetTemplateData(state.Config, state.Storage)
+	// 	payload, _ := json.Marshal(templateData)
+	// 	io.WriteString(w, string(payload))
+	// }
+}
+
+// Get current executable folder path
+func executableFolder() string {
+	folderPath, err := osext.ExecutableFolder()
+	if err != nil {
+		log.Fatal(err)
+	}
+	return folderPath
+}
+
+func registerMarathonEvent(conf *configuration.Configuration) {
+
+	client := &http.Client{}
+	// it's safe to register with multiple marathon nodes
+	for _, marathon := range conf.Marathon.Endpoints() {
+		url := marathon + "/v2/eventSubscriptions?callbackUrl=" + conf.Bamboo.Endpoint + "/api/marathon/event_callback"
+		req, _ := http.NewRequest("POST", url, nil)
+		req.Header.Add("Content-Type", "application/json")
+		if len(conf.Marathon.User) > 0 && len(conf.Marathon.Password) > 0 {
+			req.SetBasicAuth(conf.Marathon.User, conf.Marathon.Password)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			errorMsg := "An error occurred while accessing Marathon callback system: %s\n"
+			log.Printf(errorMsg, err)
+			return
+		}
+		bodyBytes, err := ioutil.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			log.Fatal(err)
+			return
+		}
+		body := string(bodyBytes)
+		if strings.HasPrefix(body, "{\"message") {
+			warningMsg := "Access to the callback system of Marathon seems to be failed, response: %s\n"
+			log.Printf(warningMsg, body)
+		}
+	}
+}
+
+// func createAndListen(conf configuration.Zookeeper) (chan zk.Event, *zk.Conn) {
+// 	conn, _, err := zk.Connect(conf.ConnectionString(), time.Second*10)
+
+// 	if err != nil {
+// 		log.Panic(err)
+// 	}
+
+// 	ch, _ := qzk.ListenToConn(conn, conf.Path, true, conf.Delay())
+// 	return ch, conn
+// }
+
+func listenToMarathonEventStream(conf *configuration.Configuration, sub api.EventSubscriptionAPI) {
+	client := &http.Client{}
+	client.Timeout = 0 * time.Second
+
+	for _, marathon := range conf.Marathon.Endpoints() {
+		ticker := time.NewTicker(1 * time.Second)
+		eventsURL := marathon + "/v2/events"
+		go func() {
+			for _ = range ticker.C {
+				req, err := http.NewRequest("GET", eventsURL, nil)
+				req.Header.Set("Accept", "text/event-stream")
+				if len(conf.Marathon.User) > 0 && len(conf.Marathon.Password) > 0 {
+					req.SetBasicAuth(conf.Marathon.User, conf.Marathon.Password)
+				}
+				if err != nil {
+					errorMsg := "An error occurred while creating request to Marathon events system: %s\n"
+					log.Printf(errorMsg, err)
+					continue
+				}
+
+				resp, err := client.Do(req)
+				if err != nil {
+					errorMsg := "An error occurred while making a request to Marathon events system: %s\n"
+					log.Printf(errorMsg, err)
+					continue
+				}
+
+				defer resp.Body.Close()
+
+				reader := bufio.NewReader(resp.Body)
+				for {
+					line, err := reader.ReadString('\n')
+					if err != nil {
+						if err != io.EOF {
+							errorMsg := "An error occurred while reading Marathon event: %s\n"
+							log.Printf(errorMsg, err)
+						}
+						break
+					}
+
+					if len(strings.TrimSpace(line)) == 0 {
+						continue
+					}
+
+					if !strings.HasPrefix(line, "data: ") {
+						errorMsg := "Wrong event format: %s\n"
+						log.Printf(errorMsg, line)
+						continue
+					}
+
+					line = line[6:]
+					sub.Notify([]byte(line))
+				}
+
+				log.Println("Event stream connection was closed. Re-opening...")
+			}
+		}()
+	}
+}
+
+func configureLog() {
+	if len(logPath) > 0 {
+		log.SetOutput(io.MultiWriter(&lumberjack.Logger{
+			Filename: logPath,
+			// megabytes
+			MaxSize:    100,
+			MaxBackups: 3,
+			//days
+			MaxAge: 28,
+		}, os.Stdout))
+	}
+}
+
+func registerOSSignals() {
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt)
+	go func() {
+		for _ = range c {
+			log.Println("Server Stopped")
+			os.Exit(0)
+		}
+	}()
+}
