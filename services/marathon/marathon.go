@@ -167,6 +167,10 @@ func FetchTasks(conf *configuration.Configuration) (map[string]Task, error) {
 	return tasksByID, nil
 }
 
+func (app App) FetchDetails() (map[string]Task, error) {
+	return nil, nil
+}
+
 func (app App) ScaleApp(conf *configuration.Configuration, marathonApp string) error {
 
 	autoscaleMultiplier, err := strconv.Atoi(app.Labels["autoscaleMultiplier"])

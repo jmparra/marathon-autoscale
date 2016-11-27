@@ -16,9 +16,6 @@ var logger = log.New(os.Stdout, "", log.Ldate|log.Ltime|log.Lshortfile)
 type Configuration struct {
 	// Marathon configuration
 	Marathon Marathon
-
-	// MarathonAutoscale specific configuration
-	Autoscale Autoscale
 }
 
 /*
@@ -41,9 +38,6 @@ func FromFile(filePath string) (Configuration, error) {
 	setValueFromEnv(&conf.Marathon.Endpoint, "MARATHON_ENDPOINT")
 	setValueFromEnv(&conf.Marathon.User, "MARATHON_USER")
 	setValueFromEnv(&conf.Marathon.Password, "MARATHON_PASSWORD")
-	setBoolValueFromEnv(&conf.Marathon.UseEventStream, "MARATHON_USE_EVENT_STREAM")
-
-	setValueFromEnv(&conf.Autoscale.Endpoint, "BAMBOO_ENDPOINT")
 
 	return *conf, err
 }
