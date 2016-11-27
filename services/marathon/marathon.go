@@ -5,41 +5,20 @@ import (
 	"io/ioutil"
 	"net/http"
 	"sort"
-	"strings"
 
-	"github.com/marathon-autoscale/configuration"
+	"github.com/rossmerr/marathon-autoscale/configuration"
 )
-
-// HealthCheck on the application
-type HealthCheck struct {
-	// One of TCP, HTTP or COMMAND
-	Protocol string
-	// The path (if Protocol is HTTP)
-	Path string
-	// The position of the port targeted in the ports array
-	PortIndex int
-}
-
-// Task describes an app process running
-type Task struct {
-	ID    string
-	Host  string
-	Port  int
-	Ports []int
-	Alive bool
-}
 
 // App may have multiple processes
 type App struct {
-	ID                  string
-	HealthCheckPath     string
-	HealthCheckProtocol string
-	HealthChecks        []HealthCheck
-	Tasks               []Task
-	ServicePort         int
-	ServicePorts        []int
-	Env                 map[string]string
-	Labels              map[string]string
+	ID           string            `json:"id"`
+	HealthChecks []HealthCheck     `json:"healthChecks"`
+	Ports        []int             `json:"ports"`
+	Env          map[string]string `json:"env"`
+	Labels       map[string]string `json:"labels"`
+	Instances    int               `json:"instances"`
+	TasksRunning int               `json:"tasksRunning"`
+	TasksStaged  int               `json:"tasksStaged"`
 }
 
 // AppList a array of App's
@@ -57,18 +36,13 @@ func (slice AppList) Swap(i, j int) {
 	slice[i], slice[j] = slice[j], slice[i]
 }
 
-type marathonTaskList []marathonTask
+type TaskList []Task
 
-type marathonTasks struct {
-	Tasks marathonTaskList `json:"tasks"`
+type Tasks struct {
+	Tasks TaskList `json:"tasks"`
 }
 
-// HealthCheckResult the results of a HealthCheck call to marathon
-type HealthCheckResult struct {
-	Alive bool
-}
-
-type marathonTask struct {
+type Task struct {
 	AppID              string
 	ID                 string
 	Host               string
@@ -80,37 +54,42 @@ type marathonTask struct {
 	HealthCheckResults []HealthCheckResult
 }
 
-func (slice marathonTaskList) Len() int {
+type HealthCheckResult struct {
+	Alive               bool     `json:"Alive"`
+	ConsecutiveFailures int      `json:"consecutiveFailures"`
+	FirstSuccess        JSONDate `json:"firstSuccess"`
+	LastFailure         JSONDate `json:"lastFailure"`
+	LastSuccess         JSONDate `json:"lastSuccess"`
+	TaskID              string   `json:"taskId"`
+}
+
+func (slice TaskList) Len() int {
 	return len(slice)
 }
 
-func (slice marathonTaskList) Less(i, j int) bool {
+func (slice TaskList) Less(i, j int) bool {
 	return slice[i].ID < slice[j].ID
 }
 
-func (slice marathonTaskList) Swap(i, j int) {
+func (slice TaskList) Swap(i, j int) {
 	slice[i], slice[j] = slice[j], slice[i]
 }
 
-type marathonApps struct {
-	Apps []marathonApp `json:"apps"`
+type Apps struct {
+	Apps []App `json:"apps"`
 }
 
-type marathonApp struct {
-	ID           string                `json:"id"`
-	HealthChecks []marathonHealthCheck `json:"healthChecks"`
-	Ports        []int                 `json:"ports"`
-	Env          map[string]string     `json:"env"`
-	Labels       map[string]string     `json:"labels"`
+// HealthCheck on the application
+type HealthCheck struct {
+	// The path (if Protocol is HTTP)
+	Path string `json:"path"`
+	// One of TCP, HTTP or COMMAND
+	Protocol string `json:"protocol"`
+	// The position of the port targeted in the ports array
+	PortIndex int `json:"portIndex"`
 }
 
-type marathonHealthCheck struct {
-	Path      string `json:"path"`
-	Protocol  string `json:"protocol"`
-	PortIndex int    `json:"portIndex"`
-}
-
-func fetchMarathonApps(endpoint string, conf *configuration.Configuration) (map[string]marathonApp, error) {
+func FetchApps(endpoint string, conf *configuration.Configuration) (map[string]App, error) {
 	client := &http.Client{}
 	req, _ := http.NewRequest("GET", endpoint+"/v2/apps", nil)
 	req.Header.Add("Accept", "application/json")
@@ -125,7 +104,7 @@ func fetchMarathonApps(endpoint string, conf *configuration.Configuration) (map[
 	}
 
 	defer response.Body.Close()
-	var appResponse marathonApps
+	var appResponse Apps
 
 	contents, err := ioutil.ReadAll(response.Body)
 	if err != nil {
@@ -137,7 +116,7 @@ func fetchMarathonApps(endpoint string, conf *configuration.Configuration) (map[
 		return nil, err
 	}
 
-	dataByID := map[string]marathonApp{}
+	dataByID := map[string]App{}
 
 	for _, appConfig := range appResponse.Apps {
 		dataByID[appConfig.ID] = appConfig
@@ -146,7 +125,7 @@ func fetchMarathonApps(endpoint string, conf *configuration.Configuration) (map[
 	return dataByID, nil
 }
 
-func fetchTasks(endpoint string, conf *configuration.Configuration) (map[string]marathonTaskList, error) {
+func FetchTasks(endpoint string, conf *configuration.Configuration) (map[string]Task, error) {
 	client := &http.Client{}
 	req, _ := http.NewRequest("GET", endpoint+"/v2/tasks", nil)
 	req.Header.Add("Accept", "application/json")
@@ -156,7 +135,7 @@ func fetchTasks(endpoint string, conf *configuration.Configuration) (map[string]
 	}
 	response, err := client.Do(req)
 
-	var tasks marathonTasks
+	var tasks Tasks
 
 	if err != nil {
 		return nil, err
@@ -176,144 +155,65 @@ func fetchTasks(endpoint string, conf *configuration.Configuration) (map[string]
 	taskList := tasks.Tasks
 	sort.Sort(taskList)
 
-	tasksByID := map[string]marathonTaskList{}
-	for _, task := range taskList {
-		if tasksByID[task.AppID] == nil {
-			tasksByID[task.AppID] = marathonTaskList{}
-		}
-		tasksByID[task.AppID] = append(tasksByID[task.AppID], task)
-	}
+	tasksByID := map[string]Task{}
 
-	for _, list := range tasksByID {
-		sort.Sort(list)
+	for _, taskConfig := range tasks.Tasks {
+		tasksByID[taskConfig.ID] = taskConfig
 	}
 
 	return tasksByID, nil
 }
 
-func calculateTaskHealth(healthCheckResults []HealthCheckResult, healthChecks []marathonHealthCheck) bool {
-	//If we don't even have health check results for every health check, don't count the task as healthy
-	if len(healthChecks) > len(healthCheckResults) {
-		return false
-	}
-	for _, healthCheck := range healthCheckResults {
-		if !healthCheck.Alive {
-			return false
-		}
-	}
-	return true
-}
+// func createApps(tasksByID map[string]marathonTaskList, marathonApps map[string]marathonApp) AppList {
+// 	apps := AppList{}
 
-func createApps(tasksByID map[string]marathonTaskList, marathonApps map[string]marathonApp) AppList {
-	apps := AppList{}
+// 	for appID, mApp := range marathonApps {
 
-	for appID, mApp := range marathonApps {
+// 		// Try to handle old app id format without slashes
+// 		appPath := appID
+// 		if !strings.HasPrefix(appID, "/") {
+// 			appPath = "/" + appID
+// 		}
 
-		// Try to handle old app id format without slashes
-		appPath := appID
-		if !strings.HasPrefix(appID, "/") {
-			appPath = "/" + appID
-		}
+// 		// build App from marathonApp
+// 		app := App{
+// 			ID:     appPath,
+// 			Env:    mApp.Env,
+// 			Labels: mApp.Labels,
+// 		}
 
-		// build App from marathonApp
-		app := App{
-			ID:                  appPath,
-			HealthCheckPath:     parseHealthCheckPath(mApp.HealthChecks),
-			HealthCheckProtocol: parseHealthCheckProtocol(mApp.HealthChecks),
-			Env:                 mApp.Env,
-			Labels:              mApp.Labels,
-		}
+// 		app.HealthChecks = make([]HealthCheck, 0, len(mApp.HealthChecks))
+// 		for _, marathonCheck := range mApp.HealthChecks {
+// 			check := HealthCheck{
+// 				Protocol:  marathonCheck.Protocol,
+// 				Path:      marathonCheck.Path,
+// 				PortIndex: marathonCheck.PortIndex,
+// 			}
+// 			app.HealthChecks = append(app.HealthChecks, check)
+// 		}
 
-		app.HealthChecks = make([]HealthCheck, 0, len(mApp.HealthChecks))
-		for _, marathonCheck := range mApp.HealthChecks {
-			check := HealthCheck{
-				Protocol:  marathonCheck.Protocol,
-				Path:      marathonCheck.Path,
-				PortIndex: marathonCheck.PortIndex,
-			}
-			app.HealthChecks = append(app.HealthChecks, check)
-		}
+// 		if len(mApp.Ports) > 0 {
+// 			app.ServicePort = mApp.Ports[0]
+// 			app.ServicePorts = mApp.Ports
+// 		}
 
-		if len(mApp.Ports) > 0 {
-			app.ServicePort = mApp.Ports[0]
-			app.ServicePorts = mApp.Ports
-		}
+// 		// build Tasks for this App
+// 		tasks := []Task{}
+// 		for _, mTask := range tasksByID[appID] {
+// 			if len(mTask.Ports) > 0 {
+// 				t := Task{
+// 					ID:                 mTask.ID,
+// 					Host:               mTask.Host,
+// 					Port:               mTask.Ports[0],
+// 					Ports:              mTask.Ports,
+// 					HealthCheckResults: mTask.HealthCheckResults,
+// 				}
+// 				tasks = append(tasks, t)
+// 			}
+// 		}
+// 		app.Tasks = tasks
 
-		// build Tasks for this App
-		tasks := []Task{}
-		for _, mTask := range tasksByID[appID] {
-			if len(mTask.Ports) > 0 {
-				t := Task{
-					ID:    mTask.ID,
-					Host:  mTask.Host,
-					Port:  mTask.Ports[0],
-					Ports: mTask.Ports,
-					Alive: calculateTaskHealth(mTask.HealthCheckResults, mApp.HealthChecks),
-				}
-				tasks = append(tasks, t)
-			}
-		}
-		app.Tasks = tasks
-
-		apps = append(apps, app)
-	}
-	return apps
-}
-
-func parseHealthCheckPath(checks []marathonHealthCheck) string {
-	for _, check := range checks {
-		if check.Protocol != "HTTP" && check.Protocol != "HTTPS" {
-			continue
-		}
-		return check.Path
-	}
-	return ""
-}
-
-/* maybe combine this with the above? */
-func parseHealthCheckProtocol(checks []marathonHealthCheck) string {
-	for _, check := range checks {
-		if check.Protocol != "HTTP" && check.Protocol != "HTTPS" {
-			continue
-		}
-		return check.Protocol
-	}
-	return ""
-}
-
-// FetchApps returns a struct that describes Marathon current app and their
-// sub tasks information.
-//
-// Parameters:
-//	endpoint: Marathon HTTP endpoint, e.g. http://localhost:8080
-func FetchApps(maraconf configuration.Marathon, conf *configuration.Configuration) (AppList, error) {
-
-	var applist AppList
-	var err error
-
-	// try all configured endpoints until one succeeds
-	for _, url := range maraconf.Endpoints() {
-		applist, err = fetchApps(url, conf)
-		if err == nil {
-			return applist, err
-		}
-	}
-	// return last error
-	return nil, err
-}
-
-func fetchApps(url string, conf *configuration.Configuration) (AppList, error) {
-	tasks, err := fetchTasks(url, conf)
-	if err != nil {
-		return nil, err
-	}
-
-	marathonApps, err := fetchMarathonApps(url, conf)
-	if err != nil {
-		return nil, err
-	}
-
-	apps := createApps(tasks, marathonApps)
-	sort.Sort(apps)
-	return apps, nil
-}
+// 		apps = append(apps, app)
+// 	}
+// 	return apps
+// }
