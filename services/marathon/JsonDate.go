@@ -15,11 +15,11 @@ func (t JSONDate) MarshalJSON() ([]byte, error) {
 func (t *JSONDate) UnmarshalJSON(data []byte) (err error) {
 	// Fractional seconds are handled implicitly by Parse.
 	s := string(data)
-	if s == "" {
+	if s == "null" {
 		return
 	}
 
-	tt, err := time.Parse(time.RFC3339, s)
+	tt, err := time.Parse(`"`+time.RFC3339+`"`, s)
 	*t = JSONDate{&tt}
 	return
 }
