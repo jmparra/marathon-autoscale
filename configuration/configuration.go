@@ -16,6 +16,8 @@ var logger = log.New(os.Stdout, "", log.Ldate|log.Ltime|log.Lshortfile)
 type Configuration struct {
 	// Marathon configuration
 	Marathon Marathon
+
+	Mesos Mesos
 }
 
 /*
