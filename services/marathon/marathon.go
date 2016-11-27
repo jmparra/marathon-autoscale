@@ -1,10 +1,13 @@
 package marathon
 
 import (
+	"bytes"
 	"encoding/json"
 	"io/ioutil"
+	"math"
 	"net/http"
 	"sort"
+	"strconv"
 
 	"github.com/rossmerr/marathon-autoscale/configuration"
 )
@@ -89,9 +92,9 @@ type HealthCheck struct {
 	PortIndex int `json:"portIndex"`
 }
 
-func FetchApps(endpoint string, conf *configuration.Configuration) (map[string]App, error) {
+func FetchApps(conf *configuration.Configuration) (map[string]App, error) {
 	client := &http.Client{}
-	req, _ := http.NewRequest("GET", endpoint+"/v2/apps", nil)
+	req, _ := http.NewRequest("GET", conf.Marathon.Endpoint+"/v2/apps", nil)
 	req.Header.Add("Accept", "application/json")
 	req.Header.Add("Content-Type", "application/json")
 	if len(conf.Marathon.User) > 0 && len(conf.Marathon.Password) > 0 {
@@ -125,9 +128,9 @@ func FetchApps(endpoint string, conf *configuration.Configuration) (map[string]A
 	return dataByID, nil
 }
 
-func FetchTasks(endpoint string, conf *configuration.Configuration) (map[string]Task, error) {
+func FetchTasks(conf *configuration.Configuration) (map[string]Task, error) {
 	client := &http.Client{}
-	req, _ := http.NewRequest("GET", endpoint+"/v2/tasks", nil)
+	req, _ := http.NewRequest("GET", conf.Marathon.Endpoint+"/v2/tasks", nil)
 	req.Header.Add("Accept", "application/json")
 	req.Header.Add("Content-Type", "application/json")
 	if len(conf.Marathon.User) > 0 && len(conf.Marathon.Password) > 0 {
@@ -164,56 +167,38 @@ func FetchTasks(endpoint string, conf *configuration.Configuration) (map[string]
 	return tasksByID, nil
 }
 
-// func createApps(tasksByID map[string]marathonTaskList, marathonApps map[string]marathonApp) AppList {
-// 	apps := AppList{}
+func (app App) ScaleApp(conf *configuration.Configuration, marathonApp string) error {
 
-// 	for appID, mApp := range marathonApps {
+	autoscaleMultiplier, err := strconv.Atoi(app.Labels["autoscaleMultiplier"])
+	if err != nil {
+		return err
+	}
 
-// 		// Try to handle old app id format without slashes
-// 		appPath := appID
-// 		if !strings.HasPrefix(appID, "/") {
-// 			appPath = "/" + appID
-// 		}
+	maxInstances, err := strconv.Atoi(app.Labels["maxInstances"])
+	if err != nil {
+		return err
+	}
 
-// 		// build App from marathonApp
-// 		app := App{
-// 			ID:     appPath,
-// 			Env:    mApp.Env,
-// 			Labels: mApp.Labels,
-// 		}
+	targetInstancesFloat := float64(app.Instances * autoscaleMultiplier)
+	targetInstances := int(math.Ceil(targetInstancesFloat))
 
-// 		app.HealthChecks = make([]HealthCheck, 0, len(mApp.HealthChecks))
-// 		for _, marathonCheck := range mApp.HealthChecks {
-// 			check := HealthCheck{
-// 				Protocol:  marathonCheck.Protocol,
-// 				Path:      marathonCheck.Path,
-// 				PortIndex: marathonCheck.PortIndex,
-// 			}
-// 			app.HealthChecks = append(app.HealthChecks, check)
-// 		}
+	if targetInstances > maxInstances {
+		targetInstances = maxInstances
+	}
 
-// 		if len(mApp.Ports) > 0 {
-// 			app.ServicePort = mApp.Ports[0]
-// 			app.ServicePorts = mApp.Ports
-// 		}
+	client := &http.Client{}
+	var jsonStr = []byte(`{"instances": ` + strconv.Itoa(targetInstances) + `}`)
+	req, _ := http.NewRequest("PUT", conf.Marathon.Endpoint+"/v2/apps/"+app.ID, bytes.NewBuffer(jsonStr))
+	req.Header.Add("Accept", "application/json")
+	req.Header.Add("Content-Type", "application/json")
+	if len(conf.Marathon.User) > 0 && len(conf.Marathon.Password) > 0 {
+		req.SetBasicAuth(conf.Marathon.User, conf.Marathon.Password)
+	}
+	_, err = client.Do(req)
 
-// 		// build Tasks for this App
-// 		tasks := []Task{}
-// 		for _, mTask := range tasksByID[appID] {
-// 			if len(mTask.Ports) > 0 {
-// 				t := Task{
-// 					ID:                 mTask.ID,
-// 					Host:               mTask.Host,
-// 					Port:               mTask.Ports[0],
-// 					Ports:              mTask.Ports,
-// 					HealthCheckResults: mTask.HealthCheckResults,
-// 				}
-// 				tasks = append(tasks, t)
-// 			}
-// 		}
-// 		app.Tasks = tasks
+	if err != nil {
+		return err
+	}
 
-// 		apps = append(apps, app)
-// 	}
-// 	return apps
-// }
+	return nil
+}

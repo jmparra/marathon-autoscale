@@ -52,7 +52,8 @@ func TestFetchApps(t *testing.T) {
 	defer ts.Close()
 
 	conf := &configuration.Configuration{}
-	apps, err := FetchApps(ts.URL, conf)
+	conf.Marathon.Endpoint = ts.URL
+	apps, err := FetchApps(conf)
 
 	if err != nil {
 		log.Fatal(err)
@@ -125,7 +126,8 @@ func TestFetchTasks(t *testing.T) {
 	defer ts.Close()
 
 	conf := &configuration.Configuration{}
-	tasks, err := FetchTasks(ts.URL, conf)
+	conf.Marathon.Endpoint = ts.URL
+	tasks, err := FetchTasks(conf)
 
 	if err != nil {
 		log.Fatal(err)
