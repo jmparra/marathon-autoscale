@@ -2,10 +2,10 @@ package mesos
 
 import (
 	"encoding/json"
+	"errors"
 	"io/ioutil"
 	"net/http"
-
-	"fmt"
+	"strings"
 
 	"github.com/rossmerr/marathon-autoscale/configuration"
 )
@@ -21,23 +21,18 @@ type Resource struct {
 }
 
 type Statistics struct {
-	CPUsLimit             float32 `json:"cpus_limit"`
-	CPUsNrPeriods         int     `json:"cpus_nr_periods"`
-	CPUsNrThrottled       int     `json:"cpus_nr_throttled"`
-	CPUsSystemTimeSecs    float32 `json:"cpus_system_time_secs"`
-	CPUsThrottledTimeSecs float32 `json:"cpus_throttled_time_secs"`
-	CPUsUserTimeSecs      float32 `json:"cpus_user_time_secs"`
-	MemAnonBytes          int     `json:"mem_anon_bytes"`
-	MemFileBytes          int     `json:"mem_file_bytes"`
-	MemLimitBytes         int     `json:"mem_limit_bytes"`
-	MemMappedFileBytes    int     `json:"mem_mapped_file_bytes"`
-	MemRssBytes           int     `json:"mem_rss_bytes"`
-	Timestamp             float32 `json:"timestamp"`
+	CPUsLimit          float32 `json:"cpus_limit"`
+	CPUsSystemTimeSecs float32 `json:"cpus_system_time_secs"`
+	CPUsUserTimeSecs   float32 `json:"cpus_user_time_secs"`
+	MemLimitBytes      int     `json:"mem_limit_bytes"`
+	MemRssBytes        int     `json:"mem_rss_bytes"`
+	Timestamp          float32 `json:"timestamp"`
 }
 
-func FetchAgentStatistics(agent string, conf *configuration.Configuration) (map[string]Resource, error) {
+func (s Slave) FetchAgentStatistics() ([]Resource, error) {
 	client := &http.Client{}
-	req, _ := http.NewRequest("GET", conf.Mesos.Endpoint+"/slave/"+agent+"/monitor/statistics.json", nil)
+	endpoint, err := s.Endpoint()
+	req, _ := http.NewRequest("GET", "http://"+endpoint+"/monitor/statistics", nil)
 	req.Header.Add("Accept", "application/json")
 	req.Header.Add("Content-Type", "application/json")
 	response, err := client.Do(req)
@@ -53,17 +48,82 @@ func FetchAgentStatistics(agent string, conf *configuration.Configuration) (map[
 	if err != nil {
 		return nil, err
 	}
-	fmt.Printf(string(contents))
+
 	err = json.Unmarshal(contents, &resources)
 	if err != nil {
 		return nil, err
 	}
 
-	resourcesByID := map[string]Resource{}
+	return resources, nil
+}
 
-	for _, resource := range resources {
-		resourcesByID[resource.ExecutorID] = resource
+type Slaves struct {
+	Slaves []Slave
+}
+
+type Slave struct {
+	ID                  string         `json:"id"`
+	PID                 string         `json:"pid"`
+	Hostname            string         `json:"hostname"`
+	RegisteredTime      float32        `json:"registered_time"`
+	Resources           SlaveResources `json:"resources"`
+	UsedResources       SlaveResources `json:"used_resources"`
+	OfferedResources    SlaveResources `json:"offered_resources"`
+	ReservedResources   SlaveResources `json:"reserved_resources"`
+	UnReservedResources SlaveResources `json:"unreserved_resources"`
+	//	Attributes          []string       `json:"attributes"`
+	Active  bool   `json:"active"`
+	Version string `json:"version"`
+}
+
+func (s Slave) Endpoint() (string, error) {
+
+	index := strings.Index(s.PID, "@")
+
+	if index != -1 {
+		substring := s.PID[index+1 : len(s.PID)]
+		return substring, nil
 	}
 
-	return resourcesByID, nil
+	return s.PID, errors.New("Hostname not found within pid")
+}
+
+type SlaveResources struct {
+	Disk int     `json:"disk"`
+	Mem  int     `json:"mem"`
+	GPUS float32 `json:"gpus"`
+	CPUS float32 `json:"cpus"`
+}
+
+func FetchAgents(conf *configuration.Configuration) (map[string]Slave, error) {
+	client := &http.Client{}
+	req, _ := http.NewRequest("GET", conf.Mesos.Endpoint+"/slaves", nil)
+	req.Header.Add("Accept", "application/json")
+	req.Header.Add("Content-Type", "application/json")
+	response, err := client.Do(req)
+
+	if err != nil {
+		return nil, err
+	}
+
+	defer response.Body.Close()
+	var slaves Slaves
+
+	contents, err := ioutil.ReadAll(response.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	err = json.Unmarshal(contents, &slaves)
+	if err != nil {
+		return nil, err
+	}
+
+	slaveByID := map[string]Slave{}
+
+	for _, slave := range slaves.Slaves {
+		slaveByID[slave.ID] = slave
+	}
+
+	return slaveByID, nil
 }

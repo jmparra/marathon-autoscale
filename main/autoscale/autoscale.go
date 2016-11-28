@@ -13,11 +13,32 @@ func (autoscale Autoscale) Init() error {
 	conf := &configuration.Configuration{}
 
 	for {
+		resources := make([]mesos.Resource, 0)
+
 		apps, err := marathon.FetchApps(conf)
+
+		if err != nil {
+			return err
+		}
 		tasks, err := marathon.FetchTasks(conf)
 
 		if err != nil {
 			return err
+		}
+		agents, err := mesos.FetchAgents(conf)
+
+		if err != nil {
+			return err
+		}
+
+		for _, agent := range agents {
+			statistics, err := agent.FetchAgentStatistics()
+
+			if err != nil {
+				return err
+			}
+
+			resources = append(resources, statistics...)
 		}
 
 		for _, app := range apps {
@@ -30,21 +51,21 @@ func (autoscale Autoscale) Init() error {
 				return app.ID == appID
 			})
 
-			for _, task := range appTasks {
-				resources, err := mesos.FetchAgentStatistics(task.Host, conf)
+			// for _, task := range appTasks {
+			// 	resourcess, err := mesos.FetchAgentStatistics(task.Host, conf)
 
-				if err != nil {
-					return err
-				}
+			// 	if err != nil {
+			// 		return err
+			// 	}
 
-				statistics := filterStatistics(resources, func(executorID string) bool {
-					return task.ID == executorID
-				})
+			// 	statistics := filterStatistics(resources, func(executorID string) bool {
+			// 		return task.ID == executorID
+			// 	})
 
-				for _, statistic := range statistics {
+			// 	for _, statistic := range statistics {
 
-				}
-			}
+			// 	}
+			// }
 		}
 	}
 	return nil

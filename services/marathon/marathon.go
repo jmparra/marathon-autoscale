@@ -6,7 +6,6 @@ import (
 	"io/ioutil"
 	"math"
 	"net/http"
-	"sort"
 	"strconv"
 
 	"github.com/rossmerr/marathon-autoscale/configuration"
@@ -64,18 +63,6 @@ type HealthCheckResult struct {
 	LastFailure         JSONDate `json:"lastFailure"`
 	LastSuccess         JSONDate `json:"lastSuccess"`
 	TaskID              string   `json:"taskId"`
-}
-
-func (slice TaskList) Len() int {
-	return len(slice)
-}
-
-func (slice TaskList) Less(i, j int) bool {
-	return slice[i].ID < slice[j].ID
-}
-
-func (slice TaskList) Swap(i, j int) {
-	slice[i], slice[j] = slice[j], slice[i]
 }
 
 type Apps struct {
@@ -154,9 +141,6 @@ func FetchTasks(conf *configuration.Configuration) (map[string]Task, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	taskList := tasks.Tasks
-	sort.Sort(taskList)
 
 	tasksByID := map[string]Task{}
 
