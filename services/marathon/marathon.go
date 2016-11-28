@@ -23,25 +23,10 @@ type App struct {
 	TasksStaged  int               `json:"tasksStaged"`
 }
 
-// AppList a array of App's
-type AppList []App
+type taskList []Task
 
-func (slice AppList) Len() int {
-	return len(slice)
-}
-
-func (slice AppList) Less(i, j int) bool {
-	return slice[i].ID < slice[j].ID
-}
-
-func (slice AppList) Swap(i, j int) {
-	slice[i], slice[j] = slice[j], slice[i]
-}
-
-type TaskList []Task
-
-type Tasks struct {
-	Tasks TaskList `json:"tasks"`
+type tasks struct {
+	Tasks taskList `json:"tasks"`
 }
 
 type Task struct {
@@ -65,7 +50,7 @@ type HealthCheckResult struct {
 	TaskID              string   `json:"taskId"`
 }
 
-type Apps struct {
+type apps struct {
 	Apps []App `json:"apps"`
 }
 
@@ -94,7 +79,7 @@ func FetchApps(conf *configuration.Configuration) (map[string]App, error) {
 	}
 
 	defer response.Body.Close()
-	var appResponse Apps
+	var appResponse apps
 
 	contents, err := ioutil.ReadAll(response.Body)
 	if err != nil {
@@ -125,7 +110,7 @@ func FetchTasks(conf *configuration.Configuration) (map[string]Task, error) {
 	}
 	response, err := client.Do(req)
 
-	var tasks Tasks
+	var tasks tasks
 
 	if err != nil {
 		return nil, err

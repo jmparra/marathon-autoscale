@@ -36,7 +36,6 @@ func (s Slave) FetchAgentStatistics() ([]Resource, error) {
 	req.Header.Add("Accept", "application/json")
 	req.Header.Add("Content-Type", "application/json")
 	response, err := client.Do(req)
-
 	if err != nil {
 		return nil, err
 	}
@@ -57,7 +56,7 @@ func (s Slave) FetchAgentStatistics() ([]Resource, error) {
 	return resources, nil
 }
 
-type Slaves struct {
+type slaves struct {
 	Slaves []Slave
 }
 
@@ -71,9 +70,9 @@ type Slave struct {
 	OfferedResources    SlaveResources `json:"offered_resources"`
 	ReservedResources   SlaveResources `json:"reserved_resources"`
 	UnReservedResources SlaveResources `json:"unreserved_resources"`
+	Active              bool           `json:"active"`
+	Version             string         `json:"version"`
 	//	Attributes          []string       `json:"attributes"`
-	Active  bool   `json:"active"`
-	Version string `json:"version"`
 }
 
 func (s Slave) Endpoint() (string, error) {
@@ -107,7 +106,7 @@ func FetchAgents(conf *configuration.Configuration) (map[string]Slave, error) {
 	}
 
 	defer response.Body.Close()
-	var slaves Slaves
+	var slaves slaves
 
 	contents, err := ioutil.ReadAll(response.Body)
 	if err != nil {
