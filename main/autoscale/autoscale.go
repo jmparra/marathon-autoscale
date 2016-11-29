@@ -2,58 +2,29 @@ package autoscale
 
 import (
 	"strconv"
-	"time"
 
 	"github.com/rossmerr/marathon-autoscale/configuration"
 	"github.com/rossmerr/marathon-autoscale/services/marathon"
 	"github.com/rossmerr/marathon-autoscale/services/mesos"
-	"github.com/saromanov/go-memdb"
 )
 
-type state struct {
-	AppID     string
-	CPU       float32
-	MEM       int
-	Limit     int
-	Date      time.Time
-	Timestamp float32
-}
-
-func (s state) Utilization() float32 {
-	return float32(100 * (s.MEM / s.Limit))
-
-}
-
-func (s state) Usage(s2 state) float32 {
-	cpuDelta := s.CPU - s2.CPU
-	timeDelta := s.Timestamp - s2.Timestamp
-	return float32(float32(cpuDelta/timeDelta) * 100)
+type application struct {
+	AppID               string
+	MaxMemPercent       int
+	MaxCPUTime          int
+	MaxInstances        int
+	TriggerMode         string
+	AutoscaleMultiplier float64
+	Statistics          []mesos.Resource
 }
 
 func Autoscale(conf *configuration.Configuration) error {
 
-	schema := &memdb.DBSchema{
-		Tables: map[string]*memdb.TableSchema{
-			"state": &memdb.TableSchema{
-				Name: "state",
-				Indexes: map[string]*memdb.IndexSchema{
-					"id": &memdb.IndexSchema{
-						Name:    "id",
-						Unique:  true,
-						Indexer: &memdb.StringFieldIndex{Field: "AppID"},
-					},
-				},
-			},
-		},
-	}
-
-	db, err := memdb.NewMemDB(schema)
-
-	if err != nil {
-		panic(err)
-	}
-
+	table := make(map[string]application)
+	iteration := int64(0)
 	for {
+		iteration++
+
 		resources := make([]mesos.Resource, 0)
 
 		apps, err := marathon.FetchApps(conf)
@@ -80,9 +51,6 @@ func Autoscale(conf *configuration.Configuration) error {
 			resources = append(resources, statistics...)
 		}
 
-		// Create a write transaction
-		txn := db.Txn(true)
-
 		for _, app := range apps {
 
 			maxMemPercent, err := strconv.Atoi(app.Labels["maxMemPercent"])
@@ -90,7 +58,7 @@ func Autoscale(conf *configuration.Configuration) error {
 				continue
 			}
 
-			maxCpuTime, err := strconv.Atoi(app.Labels["maxCpuTime"])
+			maxCPUTime, err := strconv.Atoi(app.Labels["maxCPUTime"])
 			if err != nil {
 				continue
 			}
@@ -105,7 +73,7 @@ func Autoscale(conf *configuration.Configuration) error {
 				triggerMode = "both"
 			}
 
-			autoscaleMultiplier, err := strconv.ParseFloat(app.Labels["autoscaleMultiplier"], 32)
+			autoscaleMultiplier, err := strconv.ParseFloat(app.Labels["autoscaleMultiplier"], 64)
 			if err != nil {
 				autoscaleMultiplier = 1.5
 			}
@@ -123,21 +91,31 @@ func Autoscale(conf *configuration.Configuration) error {
 				return false
 			})
 
-			state := state{AppID: app.ID, CPU: 0, MEM: 0, Limit: 0, Timestamp: 0, Date: time.Now()}
-			for _, statistic := range statistics {
-				state.CPU = state.CPU + statistic.Statistics.CPUsSystemTimeSecs + statistic.Statistics.CPUsUserTimeSecs
-				state.MEM = state.MEM + statistic.Statistics.MemRssBytes
-				state.Limit = state.Limit + statistic.Statistics.MemLimitBytes
-				state.Timestamp = state.Timestamp + statistic.Statistics.Timestamp
+			application := application{AppID: app.ID, MaxMemPercent: maxMemPercent, MaxCPUTime: maxCPUTime,
+				MaxInstances: maxInstances, TriggerMode: triggerMode, AutoscaleMultiplier: autoscaleMultiplier}
+
+			if app1, ok := table[app.ID]; ok {
+				application = app1
 			}
 
-			if err := txn.Insert("state", state); err != nil {
-				panic(err)
+			application.Statistics = append(application.Statistics, statistics...)
+
+			table[app.ID] = application
+		}
+
+		// remove old not running apps
+		for id := range table {
+			if _, ok := apps[id]; !ok {
+				delete(table, id)
+				break
 			}
 		}
 
-		// Commit the transaction
-		txn.Commit()
+		// for _, app := range table {
+		// 	for stats := app.Statistics {
+		// 		stats..CPUsLimit
+		// 	}
+		// }
 	}
 }
 
